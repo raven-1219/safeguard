@@ -57,31 +57,31 @@ export const Navbar: React.FC = () => {
   ];
 
   return (
-    <header className="sticky top-0 z-50 bg-slate-900/95 backdrop-blur border-b border-slate-800 text-white">
+    <header className="sticky top-0 z-50 bg-slate-950/85 backdrop-blur-2xl border-b border-slate-800/80 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Brand */}
           <Link href="/" className="flex items-center space-x-3 group">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-blue-500 flex items-center justify-center shadow-lg shadow-sky-500/20 group-hover:scale-105 transition-transform">
-              <ShieldAlert className="w-6 h-6 text-white" />
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/25 group-hover:scale-105 transition-transform">
+              <ShieldAlert className="w-6 h-6 text-slate-950" />
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <span className="font-bold text-lg tracking-wider text-sky-400">
-                  {t.app.title}
+                <span className="font-black text-lg tracking-wider text-white">
+                  SAFE GUARD <span className="text-cyan-400">AI</span>
                 </span>
-                <span className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-bold uppercase rounded bg-sky-950 text-sky-300 border border-sky-800">
-                  AI Transit
+                <span className="hidden sm:inline-block px-2 py-0.5 text-[9px] font-mono font-bold uppercase rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800">
+                  LIVE
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 hidden md:block">
-                {t.app.subtitle}
+              <p className="text-[10px] text-slate-400 font-mono hidden md:block">
+                Transit Safety • Biometric Vision
               </p>
             </div>
           </Link>
 
           {/* Nav Links */}
-          <nav className="hidden md:flex items-center space-x-1">
+          <nav className="hidden md:flex items-center space-x-1.5 font-mono text-xs">
             {navLinks
               .filter((item) => item.show)
               .map((link) => {
@@ -91,13 +91,13 @@ export const Navbar: React.FC = () => {
                   <Link
                     key={link.href}
                     href={link.href}
-                    className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    className={`flex items-center space-x-2 px-3.5 py-2 rounded-xl transition-all ${
                       isActive
-                        ? 'bg-sky-600/20 text-sky-400 border border-sky-500/30'
-                        : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                        ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 shadow-[0_0_15px_rgba(0,240,255,0.12)] font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-900/80'
                     }`}
                   >
-                    <Icon className="w-4 h-4" />
+                    <Icon className="w-3.5 h-3.5" />
                     <span>{link.label}</span>
                   </Link>
                 );

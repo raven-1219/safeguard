@@ -13,6 +13,8 @@ import {
   ChevronDown,
   ChevronUp,
   Eye,
+  Compass,
+  Boxes,
 } from 'lucide-react';
 import { useLanguage } from '@/lib/i18n/LanguageContext';
 import { calculateEAR, calculateMAR, TemporalFatigueAnalyzer, Point3D } from '@/lib/ai/faceLandmarks';
@@ -25,14 +27,21 @@ import { safetyScoreAggregator } from '@/lib/ai/safetyScorer';
 import { audioManager } from '@/lib/audio/alarmSound';
 import { offlineSyncManager } from '@/lib/offline/syncQueue';
 import { DriverSafetyState, LiveAITelemetry, PoseEmergencyTelemetry } from '@/lib/types';
+import { HeadPose3DGimbal } from './HeadPose3DGimbal';
 
 interface CameraFeedProps {
   onTelemetryUpdate?: (telemetry: LiveAITelemetry, poseTelemetry: PoseEmergencyTelemetry) => void;
   driverId: string;
   tripId?: string;
+  showEmbedded3DGimbal?: boolean;
 }
 
-export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, driverId, tripId }) => {
+export const CameraFeed: React.FC<CameraFeedProps> = ({
+  onTelemetryUpdate,
+  driverId,
+  tripId,
+  showEmbedded3DGimbal = true,
+}) => {
   const { t } = useLanguage();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -45,6 +54,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
   const [lowLightMode, setLowLightMode] = useState<boolean>(false);
   const [fps, setFps] = useState<number>(0);
   const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [show3DGimbalOverlay, setShow3DGimbalOverlay] = useState<boolean>(false);
 
   // Live state displays
   const [safetyState, setSafetyState] = useState<DriverSafetyState>('ALERT');
@@ -53,6 +63,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
   const [marValue, setMarValue] = useState<number>(0.22);
   const [headPitch, setHeadPitch] = useState<number>(0);
   const [headYaw, setHeadYaw] = useState<number>(0);
+  const [headRoll, setHeadRoll] = useState<number>(0);
   const [headDirection, setHeadDirection] = useState<'CENTER' | 'LEFT' | 'RIGHT' | 'DOWN' | 'UP'>('CENTER');
   const [isDistracted, setIsDistracted] = useState<boolean>(false);
   const [blinkCount, setBlinkCount] = useState<number>(0);
@@ -79,6 +90,20 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
   const detectedLandmarksRef = useRef<Point3D[] | null>(null);
   const isMediaPipeBusyRef = useRef<boolean>(false);
   const [trackingMode, setTrackingMode] = useState<'mediapipe' | 'optical'>('optical');
+
+  // Exponential Moving Average (EMA) smoothed variables for silky-smooth rendering
+  const sm = useRef({
+    ear: 0.29,
+    mar: 0.22,
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    bx: 0,
+    by: 0,
+    bw: 0,
+    bh: 0,
+    initialized: false,
+  }).current;
 
   // Initialize camera and AI pipeline
   const startCamera = async () => {
@@ -193,7 +218,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
 
   // Optical face & eye feature extractor (tracks face centroid & eye state)
   const computeOpticalLandmarks = (ctx: CanvasRenderingContext2D, w: number, h: number, timeSec: number): Point3D[] => {
-    // If real MediaPipe detected landmarks, return them directly
     if (detectedLandmarksRef.current && detectedLandmarksRef.current.length >= 468) {
       return detectedLandmarksRef.current;
     }
@@ -219,7 +243,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
           const r = d[idx];
           const g = d[idx + 1];
           const b = d[idx + 2];
-          // Skin color heuristic
           if (r > 60 && g > 35 && b > 20 && r > g && r > b && (r - g) > 12) {
             sumX += startX + x;
             sumY += startY + y;
@@ -228,7 +251,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
         }
       }
 
-      // Eye luminance sample in central eye band
       const eyePatch = ctx.getImageData(
         Math.floor(w * 0.35),
         Math.floor(h * 0.30),
@@ -244,7 +266,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       // Ignored
     }
 
-    // Compute dynamic face center [0, 1]
     let faceCenterX = 0.5;
     let faceCenterY = 0.45;
     if (skinPixelCount > 40) {
@@ -252,29 +273,24 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       faceCenterY = sumY / skinPixelCount / h;
     }
 
-    // Relative movement offset
     const offsetX = Math.max(-0.25, Math.min(0.25, faceCenterX - 0.5));
     const offsetY = Math.max(-0.25, Math.min(0.25, faceCenterY - 0.45));
 
-    // Anchor geometry points
     const landmarks: Point3D[] = new Array(468);
     for (let i = 0; i < 468; i++) {
       landmarks[i] = { x: faceCenterX, y: faceCenterY, z: 0 };
     }
 
-    // Luminosity-driven EAR modulation
     const eyeOpenSeparation = 0.030;
     const earFactor = eyeLuminance >= 110 ? 1.00 : eyeLuminance >= 70 ? 0.55 : 0.18;
     const eyeVSep = eyeOpenSeparation * earFactor;
 
-    // Dynamically located facial anchors:
-    landmarks[1] = { x: faceCenterX + offsetX * 0.6, y: faceCenterY + 0.03 + offsetY * 0.5, z: 0 }; // Nose tip
-    landmarks[10] = { x: faceCenterX, y: Math.max(0.06, faceCenterY - 0.22), z: 0 }; // Forehead
-    landmarks[152] = { x: faceCenterX, y: Math.min(0.94, faceCenterY + 0.25), z: 0 }; // Chin
-    landmarks[234] = { x: Math.max(0.08, faceCenterX - 0.18), y: faceCenterY, z: 0 }; // Left cheek
-    landmarks[454] = { x: Math.min(0.92, faceCenterX + 0.18), y: faceCenterY, z: 0 }; // Right cheek
+    landmarks[1] = { x: faceCenterX + offsetX * 0.6, y: faceCenterY + 0.03 + offsetY * 0.5, z: 0 };
+    landmarks[10] = { x: faceCenterX, y: Math.max(0.06, faceCenterY - 0.22), z: 0 };
+    landmarks[152] = { x: faceCenterX, y: Math.min(0.94, faceCenterY + 0.25), z: 0 };
+    landmarks[234] = { x: Math.max(0.08, faceCenterX - 0.18), y: faceCenterY, z: 0 };
+    landmarks[454] = { x: Math.min(0.92, faceCenterX + 0.18), y: faceCenterY, z: 0 };
 
-    // Left eye outer: 33, inner: 133
     const leftEyeX = faceCenterX - 0.10;
     const leftEyeY = faceCenterY - 0.07;
     landmarks[33] = { x: leftEyeX - 0.04, y: leftEyeY, z: 0 };
@@ -284,7 +300,6 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     landmarks[158] = { x: leftEyeX + 0.01, y: leftEyeY - eyeVSep, z: 0 };
     landmarks[153] = { x: leftEyeX + 0.01, y: leftEyeY + eyeVSep, z: 0 };
 
-    // Right eye outer: 362, inner: 263
     const rightEyeX = faceCenterX + 0.10;
     const rightEyeY = faceCenterY - 0.07;
     landmarks[362] = { x: rightEyeX + 0.04, y: rightEyeY, z: 0 };
@@ -294,13 +309,11 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     landmarks[387] = { x: rightEyeX - 0.01, y: rightEyeY - eyeVSep, z: 0 };
     landmarks[373] = { x: rightEyeX - 0.01, y: rightEyeY + eyeVSep, z: 0 };
 
-    // Mouth corners: 78, 308; lips: 13, 14
     landmarks[78] = { x: faceCenterX - 0.06, y: faceCenterY + 0.15, z: 0 };
     landmarks[308] = { x: faceCenterX + 0.06, y: faceCenterY + 0.15, z: 0 };
     landmarks[13] = { x: faceCenterX, y: faceCenterY + 0.14, z: 0 };
     landmarks[14] = { x: faceCenterX, y: faceCenterY + 0.16, z: 0 };
 
-    // Upper shoulders
     landmarks[11] = { x: 0.28, y: 0.85, z: 0 };
     landmarks[12] = { x: 0.72, y: 0.85, z: 0 };
 
@@ -381,7 +394,23 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     // 4. Suspected Emergency & Posture evaluation
     const poseTelemetry = emergencyDetector.processPose(landmarks);
 
-    // 5. Physiological Fatigue Classifier evaluation
+    // 5. Exponential Moving Average (EMA) smoothing for silky, jitter-free telemetry
+    if (!sm.initialized) {
+      sm.ear = fatigue.avgEar;
+      sm.mar = fatigue.mar;
+      sm.pitch = headPose.pitch;
+      sm.yaw = headPose.yaw;
+      sm.roll = headPose.roll;
+      sm.initialized = true;
+    } else {
+      sm.ear += (fatigue.avgEar - sm.ear) * 0.35;
+      sm.mar += (fatigue.mar - sm.mar) * 0.35;
+      sm.pitch += (headPose.pitch - sm.pitch) * 0.28;
+      sm.yaw += (headPose.yaw - sm.yaw) * 0.28;
+      sm.roll += (headPose.roll - sm.roll) * 0.28;
+    }
+
+    // 6. Physiological Fatigue Classifier evaluation
     const featureVector = [
       fatigue.leftEar,
       fatigue.rightEar,
@@ -402,7 +431,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     ];
     const cnnResult = cnnDrowsinessClassifier.predict(featureVector);
 
-    // 6. Combined Safety Score Aggregator
+    // 7. Combined Safety Score Aggregator
     const safetyResult = safetyScoreAggregator.calculateScore({
       isEyeClosed: fatigue.isEyeClosed,
       eyeClosedFrames: fatigue.eyeClosedFrames,
@@ -416,10 +445,11 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     });
 
     // Update React UI states
-    setEarValue(Math.round(fatigue.avgEar * 1000) / 1000);
-    setMarValue(Math.round(fatigue.mar * 1000) / 1000);
-    setHeadPitch(headPose.pitch);
-    setHeadYaw(headPose.yaw);
+    setEarValue(Math.round(sm.ear * 1000) / 1000);
+    setMarValue(Math.round(sm.mar * 1000) / 1000);
+    setHeadPitch(Math.round(sm.pitch * 10) / 10);
+    setHeadYaw(Math.round(sm.yaw * 10) / 10);
+    setHeadRoll(Math.round(sm.roll * 10) / 10);
     setHeadDirection(headPose.direction);
     setIsDistracted(headPose.isDistracted);
     setBlinkCount(fatigue.blinkCount);
@@ -447,18 +477,18 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       audioManager.stopAlarm();
     }
 
-    // Paint HUD visual graphics on canvas with live face following
+    // Paint Futuristic Cyber-Obsidian HUD visual graphics on canvas
     drawVisualHUD(ctx, w, h, fatigue.avgEar, fatigue.mar, headPose, safetyResult, belt, landmarks);
 
     // Emit live telemetry to parent
     if (onTelemetryUpdate) {
       onTelemetryUpdate(
         {
-          ear: fatigue.avgEar,
-          mar: fatigue.mar,
-          pitch: headPose.pitch,
-          yaw: headPose.yaw,
-          roll: headPose.roll,
+          ear: sm.ear,
+          mar: sm.mar,
+          pitch: sm.pitch,
+          yaw: sm.yaw,
+          roll: sm.roll,
           isEyesClosed: fatigue.isEyeClosed,
           isYawning: fatigue.isYawning,
           isDistracted: headPose.isDistracted,
@@ -483,10 +513,10 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
         event_type: safetyResult.state === 'HIGHLY DROWSY' ? 'HIGHLY_DROWSY' : 'DROWSY',
         safety_state: safetyResult.state,
         severity: safetyResult.state === 'HIGHLY DROWSY' ? 'high' : 'medium',
-        ear_value: fatigue.avgEar,
-        mar_value: fatigue.mar,
-        pitch_angle: headPose.pitch,
-        yaw_angle: headPose.yaw,
+        ear_value: sm.ear,
+        mar_value: sm.mar,
+        pitch_angle: sm.pitch,
+        yaw_angle: sm.yaw,
         cnn_confidence: cnnResult.confidence,
         seat_belt_detected: belt.isFastened,
         timestamp: new Date().toISOString(),
@@ -502,9 +532,10 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     marSensitivity,
     isCameraActive,
     onTelemetryUpdate,
+    sm,
   ]);
 
-  // Dynamic HUD Painting routine (follows actual head landmarks)
+  // Futuristic Aerospace / Cyber HUD Painting routine
   const drawVisualHUD = (
     ctx: CanvasRenderingContext2D,
     w: number,
@@ -520,15 +551,15 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     const isDistractedWarn = headPose.isDistracted;
     const isDrowsy = safetyResult.state === 'DROWSY';
 
-    const boxColor = isCritical
-      ? '#ef4444'
+    const accentColor = isCritical
+      ? '#f43f5e'
       : isDistractedWarn
       ? '#f97316'
       : isDrowsy
       ? '#f59e0b'
-      : '#10b981';
+      : '#00f0ff';
 
-    // 1. Dynamic Face Boundary calculated from actual landmarks
+    // 1. Compute Smoothed Dynamic Face Boundary
     let minX = 1, maxX = 0, minY = 1, maxY = 0;
     const keyIndices = [10, 152, 234, 454, 1, 33, 263];
     for (const idx of keyIndices) {
@@ -541,87 +572,159 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       }
     }
 
-    const padX = (maxX - minX) * 0.20;
-    const padY = (maxY - minY) * 0.20;
-    const bx = Math.max(0, (minX - padX) * w);
-    const by = Math.max(0, (minY - padY) * h);
-    const bw = Math.min(w - bx, (maxX - minX + padX * 2) * w);
-    const bh = Math.min(h - by, (maxY - minY + padY * 2) * h);
+    const padX = (maxX - minX) * 0.18;
+    const padY = (maxY - minY) * 0.18;
+    const targetBx = Math.max(0, (minX - padX) * w);
+    const targetBy = Math.max(0, (minY - padY) * h);
+    const targetBw = Math.min(w - targetBx, (maxX - minX + padX * 2) * w);
+    const targetBh = Math.min(h - targetBy, (maxY - minY + padY * 2) * h);
 
-    // Draw dynamic face rectangle
-    ctx.strokeStyle = boxColor;
-    ctx.lineWidth = isDistractedWarn ? 4 : 3;
-    if (isDistractedWarn) {
-      ctx.setLineDash([8, 6]);
+    if (sm.bw === 0) {
+      sm.bx = targetBx;
+      sm.by = targetBy;
+      sm.bw = targetBw;
+      sm.bh = targetBh;
     } else {
-      ctx.setLineDash([]);
+      sm.bx += (targetBx - sm.bx) * 0.35;
+      sm.by += (targetBy - sm.by) * 0.35;
+      sm.bw += (targetBw - sm.bw) * 0.35;
+      sm.bh += (targetBh - sm.bh) * 0.35;
     }
-    ctx.strokeRect(bx, by, bw, bh);
-    ctx.setLineDash([]);
 
-    // 2. Eye contour target rings at actual landmark coordinates
+    const bx = sm.bx;
+    const by = sm.by;
+    const bw = sm.bw;
+    const bh = sm.bh;
+
+    // 2. Sleek Corner Reticle Brackets [ ] instead of a plain box
+    const bracketLen = Math.min(24, bw * 0.22, bh * 0.22);
+    ctx.strokeStyle = accentColor;
+    ctx.lineWidth = isDistractedWarn ? 3.5 : 2;
+    ctx.shadowColor = accentColor;
+    ctx.shadowBlur = isCritical || isDistractedWarn ? 12 : 6;
+
+    // Top-Left Corner
+    ctx.beginPath();
+    ctx.moveTo(bx, by + bracketLen);
+    ctx.lineTo(bx, by);
+    ctx.lineTo(bx + bracketLen, by);
+    ctx.stroke();
+
+    // Top-Right Corner
+    ctx.beginPath();
+    ctx.moveTo(bx + bw - bracketLen, by);
+    ctx.lineTo(bx + bw, by);
+    ctx.lineTo(bx + bw, by + bracketLen);
+    ctx.stroke();
+
+    // Bottom-Left Corner
+    ctx.beginPath();
+    ctx.moveTo(bx, by + bh - bracketLen);
+    ctx.lineTo(bx, by + bh);
+    ctx.lineTo(bx + bracketLen, by + bh);
+    ctx.stroke();
+
+    // Bottom-Right Corner
+    ctx.beginPath();
+    ctx.moveTo(bx + bw - bracketLen, by + bh);
+    ctx.lineTo(bx + bw, by + bh);
+    ctx.lineTo(bx + bw, by + bh - bracketLen);
+    ctx.stroke();
+
+    // Reset shadow
+    ctx.shadowBlur = 0;
+
+    // 3. Biometric Target Reticles for Eyes
     const leftEye = landmarks[33] || { x: 0.41, y: 0.38 };
     const rightEye = landmarks[362] || { x: 0.59, y: 0.38 };
+    const eyeColor = ear < earSensitivity ? '#f43f5e' : '#00f0ff';
 
-    ctx.fillStyle = ear < earSensitivity ? '#ef4444' : '#0284c7';
+    // Left Eye Reticle
+    ctx.strokeStyle = eyeColor;
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(leftEye.x * w, leftEye.y * h, 7, 0, 2 * Math.PI);
-    ctx.arc(rightEye.x * w, rightEye.y * h, 7, 0, 2 * Math.PI);
+    ctx.arc(leftEye.x * w, leftEye.y * h, 8, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillStyle = eyeColor;
+    ctx.beginPath();
+    ctx.arc(leftEye.x * w, leftEye.y * h, 2, 0, 2 * Math.PI);
     ctx.fill();
 
-    // 3. Mouth marker at actual mouth coordinates
+    // Right Eye Reticle
+    ctx.strokeStyle = eyeColor;
+    ctx.beginPath();
+    ctx.arc(rightEye.x * w, rightEye.y * h, 8, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(rightEye.x * w, rightEye.y * h, 2, 0, 2 * Math.PI);
+    ctx.fill();
+
+    // 4. Subtle Mouth Tracking Marker
     const mouth = landmarks[13] || { x: 0.50, y: 0.62 };
-    ctx.fillStyle = mar > marSensitivity ? '#ef4444' : '#0284c7';
+    const mouthColor = mar > marSensitivity ? '#f43f5e' : 'rgba(0, 240, 255, 0.6)';
+    ctx.strokeStyle = mouthColor;
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.ellipse(mouth.x * w, mouth.y * h, 14, mar > marSensitivity ? 14 : 6, 0, 0, 2 * Math.PI);
-    ctx.fill();
+    ctx.ellipse(mouth.x * w, mouth.y * h, 14, mar > marSensitivity ? 14 : 5, 0, 0, 2 * Math.PI);
+    ctx.stroke();
 
-    // 4. Directional Head Orientation Vector from nose
+    // 5. Artificial Horizon / Pitch Ladder (Fine Cockpit Aesthetic)
     const nose = landmarks[1] || { x: 0.5, y: 0.5 };
     const noseScreenX = nose.x * w;
     const noseScreenY = nose.y * h;
 
-    const vectorLength = 45;
-    const targetX = noseScreenX + (headPose.yaw / 45) * vectorLength;
-    const targetY = noseScreenY - (headPose.pitch / 45) * vectorLength;
+    // Center horizon cross
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(noseScreenX - 8, noseScreenY);
+    ctx.lineTo(noseScreenX + 8, noseScreenY);
+    ctx.moveTo(noseScreenX, noseScreenY - 8);
+    ctx.lineTo(noseScreenX, noseScreenY + 8);
+    ctx.stroke();
 
-    ctx.strokeStyle = isDistractedWarn ? '#f97316' : '#38bdf8';
-    ctx.lineWidth = 3;
+    // Directional Orientation Vector from nose
+    const vectorLength = 46;
+    const targetX = noseScreenX + (sm.yaw / 45) * vectorLength;
+    const targetY = noseScreenY - (sm.pitch / 45) * vectorLength;
+
+    ctx.strokeStyle = isDistractedWarn ? '#f97316' : '#00f0ff';
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(noseScreenX, noseScreenY);
     ctx.lineTo(targetX, targetY);
     ctx.stroke();
 
-    ctx.fillStyle = isDistractedWarn ? '#f97316' : '#38bdf8';
+    ctx.fillStyle = isDistractedWarn ? '#f97316' : '#ffffff';
     ctx.beginPath();
-    ctx.arc(targetX, targetY, 4, 0, 2 * Math.PI);
+    ctx.arc(targetX, targetY, 3.5, 0, 2 * Math.PI);
     ctx.fill();
 
-    // 5. High-Visibility Distraction Alert Banner on Canvas
+    // 6. High-Visibility Distraction Alert Banner on Canvas
     if (isDistractedWarn) {
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.92)';
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.94)';
       ctx.fillRect(0, 0, w, 44);
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 15px sans-serif';
+      ctx.font = 'bold 14px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`⚠️ DISTRACTION ALERT: PLEASE LOOK AHEAD (${headPose.direction})`, w / 2, 28);
+      ctx.fillText(`ATTENTION WARNING: LOOK AHEAD [${headPose.direction}]`, w / 2, 28);
     } else if (headPose.direction !== 'CENTER') {
       ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
       ctx.fillRect(0, 0, w, 32);
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 12px sans-serif';
+      ctx.font = 'bold 11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`HEAD TURNED: ${headPose.direction} (Yaw: ${headPose.yaw}° Pitch: ${headPose.pitch}°)`, w / 2, 21);
+      ctx.fillText(`HEAD POSE: ${headPose.direction}  YAW: ${Math.round(sm.yaw)}°  PITCH: ${Math.round(sm.pitch)}°`, w / 2, 21);
     }
 
-    // 6. Diagonal seat belt line (if visible)
+    // 7. Diagonal Seat Belt Vector (if verified)
     if (belt.status !== 'UNKNOWN') {
-      ctx.strokeStyle = belt.isFastened ? 'rgba(16, 185, 129, 0.7)' : 'rgba(239, 68, 68, 0.8)';
-      ctx.lineWidth = 5;
+      ctx.strokeStyle = belt.isFastened ? 'rgba(16, 185, 129, 0.65)' : 'rgba(244, 63, 94, 0.75)';
+      ctx.lineWidth = 4;
       ctx.setLineDash([8, 6]);
       ctx.beginPath();
-      ctx.moveTo(w * 0.18, h * 0.45);
-      ctx.lineTo(w * 0.82, h * 0.95);
+      ctx.moveTo(w * 0.16, h * 0.45);
+      ctx.lineTo(w * 0.84, h * 0.95);
       ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -653,7 +756,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
   };
 
   return (
-    <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 shadow-2xl">
+    <div className="relative rounded-3xl overflow-hidden bg-slate-950/90 border border-slate-800/90 shadow-2xl backdrop-blur-2xl transition-all">
       {/* Video & Canvas Stream */}
       <div className="relative aspect-[4/3] w-full max-h-[500px] flex items-center justify-center bg-black">
         <video
@@ -664,15 +767,15 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
         />
         <canvas
           ref={canvasRef}
-          className="w-full h-full object-cover -scale-x-100 rounded-t-2xl"
+          className="w-full h-full object-cover -scale-x-100 rounded-t-3xl"
         />
 
         {/* Loading Overlay */}
         {isLoadingModels && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-white z-20 space-y-3 p-4 text-center">
-            <RefreshCw className="w-8 h-8 text-sky-400 animate-spin" />
-            <p className="text-sm font-bold text-white">{aiEngineStatus}</p>
-            <p className="text-xs text-slate-400">Loading browser computer vision models...</p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-white z-20 space-y-3 p-4 text-center backdrop-blur-md">
+            <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin" />
+            <p className="text-sm font-bold tracking-wide text-white font-mono">{aiEngineStatus}</p>
+            <p className="text-xs text-slate-400 font-mono">Loading browser vision pipeline...</p>
           </div>
         )}
 
@@ -680,11 +783,11 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
         {cameraError && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 text-white z-20 p-6 text-center space-y-4">
             <AlertTriangle className="w-12 h-12 text-rose-500" />
-            <h3 className="text-base font-bold text-rose-400">{t.hud.cameraError}</h3>
+            <h3 className="text-base font-bold text-rose-400 font-mono">{t.hud.cameraError}</h3>
             <p className="text-xs text-slate-400 max-w-sm">{cameraError}</p>
             <button
               onClick={startCamera}
-              className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold flex items-center space-x-2 transition-colors"
+              className="px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold flex items-center space-x-2 transition-all shadow-lg shadow-cyan-600/30"
             >
               <Camera className="w-4 h-4" />
               <span>Retry Camera Permission</span>
@@ -698,21 +801,21 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
             <div
               className={`px-3 py-1.5 rounded-xl backdrop-blur-md flex items-center space-x-2 border shadow-lg ${
                 safetyState === 'HIGHLY DROWSY'
-                  ? 'bg-rose-950/80 text-rose-300 border-rose-500 animate-pulse'
+                  ? 'bg-rose-950/90 text-rose-300 border-rose-500 animate-pulse'
                   : safetyState === 'DROWSY'
-                  ? 'bg-amber-950/80 text-amber-300 border-amber-500'
-                  : 'bg-emerald-950/80 text-emerald-300 border-emerald-500'
+                  ? 'bg-amber-950/90 text-amber-300 border-amber-500'
+                  : 'bg-emerald-950/90 text-emerald-300 border-emerald-500'
               }`}
             >
-              <span className="w-2.5 h-2.5 rounded-full bg-current animate-ping" />
-              <span className="font-extrabold text-xs tracking-wider uppercase">
+              <span className="w-2 h-2 rounded-full bg-current animate-ping" />
+              <span className="font-mono font-black text-xs tracking-wider uppercase">
                 {safetyState}
               </span>
             </div>
 
             {/* Distraction Pill */}
             {isDistracted && (
-              <div className="px-2.5 py-1.5 rounded-xl bg-rose-950/90 text-rose-300 border border-rose-500 animate-bounce flex items-center space-x-1 shadow-lg">
+              <div className="px-2.5 py-1.5 rounded-xl bg-rose-950/95 text-rose-300 border border-rose-500 animate-bounce flex items-center space-x-1 shadow-lg font-mono">
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span className="text-[11px] font-black uppercase tracking-wider">
                   DISTRACTED ({headDirection})
@@ -722,15 +825,14 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
           </div>
 
           <div className="flex items-center space-x-2">
-            <div className="px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur border border-white/10 text-[11px] font-mono text-slate-300">
+            <div className="px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-[11px] font-mono text-slate-300">
               {fps} FPS
             </div>
-            <div className="px-3 py-1 rounded-lg bg-sky-950/80 backdrop-blur border border-sky-600 text-xs font-bold text-sky-300">
-              Score: {safetyScore}%
+            <div className="px-3 py-1 rounded-lg bg-slate-900/80 backdrop-blur-md border border-cyan-500/40 text-xs font-mono font-bold text-cyan-300 shadow-[0_0_15px_rgba(0,240,255,0.15)]">
+              SCORE: {safetyScore}%
             </div>
-            {/* Tracking mode badge */}
             <div
-              className={`px-2.5 py-1 rounded-lg backdrop-blur border text-[10px] font-semibold tracking-wide ${
+              className={`px-2.5 py-1 rounded-lg backdrop-blur-md border text-[10px] font-mono font-semibold tracking-wide ${
                 trackingMode === 'mediapipe'
                   ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700'
                   : 'bg-amber-950/80 text-amber-300 border-amber-700'
@@ -741,23 +843,37 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
           </div>
         </div>
 
+        {/* Embedded 3D Gimbal Overlay Toggle in Bottom-Left */}
+        {showEmbedded3DGimbal && show3DGimbalOverlay && (
+          <div className="absolute top-14 right-3 z-20 pointer-events-auto animate-fadeIn">
+            <HeadPose3DGimbal
+              pitch={headPitch}
+              yaw={headYaw}
+              roll={headRoll}
+              direction={headDirection}
+              isDistracted={isDistracted}
+              className="w-[200px]"
+            />
+          </div>
+        )}
+
         {/* Bottom Floating Badges & Toggles */}
         <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between z-10">
           {/* Seat Belt Pill with interactive declaration */}
           <button
             type="button"
             onClick={toggleSeatBeltDeclaration}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold backdrop-blur flex items-center space-x-1.5 border transition-all ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold backdrop-blur-md flex items-center space-x-1.5 border transition-all ${
               seatBeltStatus === 'FASTENED'
-                ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700'
+                ? 'bg-emerald-950/90 text-emerald-300 border-emerald-700 hover:bg-emerald-900/90'
                 : seatBeltStatus === 'UNFASTENED'
-                ? 'bg-rose-950/80 text-rose-300 border-rose-600 animate-bounce'
-                : 'bg-slate-900/80 text-slate-300 border-slate-700'
+                ? 'bg-rose-950/90 text-rose-300 border-rose-600 animate-bounce'
+                : 'bg-slate-900/90 text-slate-300 border-slate-700 hover:bg-slate-800/90'
             }`}
             title="Click to manually declare/toggle seat belt status"
           >
             <Shield className="w-3.5 h-3.5" />
-            <span>
+            <span className="font-mono text-[11px]">
               {seatBeltStatus === 'FASTENED'
                 ? 'Belt: Fastened'
                 : seatBeltStatus === 'UNFASTENED'
@@ -767,11 +883,26 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
           </button>
 
           <div className="flex items-center space-x-2">
+            {/* 3D Holo Gimbal Toggle */}
+            <button
+              type="button"
+              onClick={() => setShow3DGimbalOverlay(!show3DGimbalOverlay)}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-mono font-medium backdrop-blur-md border flex items-center space-x-1.5 transition-all ${
+                show3DGimbalOverlay
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-[0_0_12px_rgba(0,240,255,0.25)]'
+                  : 'bg-black/60 text-slate-400 border-white/10 hover:text-white'
+              }`}
+              title="Toggle Real-Time 3D Holographic Gimbal"
+            >
+              <Boxes className="w-3.5 h-3.5" />
+              <span>3D Gimbal</span>
+            </button>
+
             {/* Low-Light Boost Toggle */}
             <button
               type="button"
               onClick={() => setLowLightMode(!lowLightMode)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium backdrop-blur border flex items-center space-x-1.5 transition-colors ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-medium backdrop-blur-md border flex items-center space-x-1.5 transition-colors ${
                 lowLightMode
                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                   : 'bg-black/60 text-slate-300 border-white/10 hover:bg-black/80'
@@ -785,10 +916,10 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
             <button
               type="button"
               onClick={() => setShowSettings(!showSettings)}
-              className="p-1.5 rounded-lg bg-black/60 text-slate-300 border border-white/10 hover:bg-black/80"
+              className="p-1.5 rounded-xl bg-black/60 text-slate-300 border border-white/10 hover:bg-black/80 transition-colors"
               title="Calibration Settings"
             >
-              <Sliders className="w-4 h-4 text-sky-400" />
+              <Sliders className="w-4 h-4 text-cyan-400" />
             </button>
           </div>
         </div>
@@ -799,17 +930,17 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
         <div className="p-4 bg-slate-950 border-t border-slate-800 text-xs space-y-3 animate-fadeIn">
           <div className="flex items-center justify-between">
             <h4 className="font-bold text-white flex items-center space-x-1.5">
-              <Sliders className="w-3.5 h-3.5 text-sky-400" />
+              <Sliders className="w-3.5 h-3.5 text-cyan-400" />
               <span>Vision Threshold Calibration (Academic Tuner)</span>
             </h4>
-            <span className="text-[10px] text-slate-400">Live Adjustment</span>
+            <span className="text-[10px] text-slate-400 font-mono">Live Adjustment</span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1">
-              <div className="flex justify-between text-slate-300">
+              <div className="flex justify-between text-slate-300 font-mono">
                 <span>Eye Aspect Ratio (EAR) Closed Threshold:</span>
-                <span className="font-mono font-bold text-sky-400">{earSensitivity}</span>
+                <span className="font-bold text-cyan-400">{earSensitivity}</span>
               </div>
               <input
                 type="range"
@@ -818,14 +949,14 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
                 step="0.01"
                 value={earSensitivity}
                 onChange={(e) => setEarSensitivity(parseFloat(e.target.value))}
-                className="w-full accent-sky-500"
+                className="w-full accent-cyan-500"
               />
             </div>
 
             <div className="space-y-1">
-              <div className="flex justify-between text-slate-300">
+              <div className="flex justify-between text-slate-300 font-mono">
                 <span>Mouth Aspect Ratio (MAR) Yawn Threshold:</span>
-                <span className="font-mono font-bold text-amber-400">{marSensitivity}</span>
+                <span className="font-bold text-amber-400">{marSensitivity}</span>
               </div>
               <input
                 type="range"
@@ -842,9 +973,9 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       )}
 
       {/* Real-time Telemetry Readout Strip */}
-      <div className="p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-900 border-t border-slate-800 text-xs">
-        <div className="bg-slate-850 p-2.5 rounded-xl border border-slate-800">
-          <span className="text-slate-400 text-[10px] block font-medium uppercase">
+      <div className="p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-900/90 border-t border-slate-800 text-xs">
+        <div className="bg-slate-950/80 p-2.5 rounded-2xl border border-slate-800">
+          <span className="text-slate-400 text-[10px] block font-mono font-medium uppercase">
             {t.hud.ear}
           </span>
           <span className="font-mono text-sm font-bold text-white">
@@ -852,8 +983,8 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
           </span>
         </div>
 
-        <div className="bg-slate-850 p-2.5 rounded-xl border border-slate-800">
-          <span className="text-slate-400 text-[10px] block font-medium uppercase">
+        <div className="bg-slate-950/80 p-2.5 rounded-2xl border border-slate-800">
+          <span className="text-slate-400 text-[10px] block font-mono font-medium uppercase">
             {t.hud.mar}
           </span>
           <span className="font-mono text-sm font-bold text-white">
@@ -863,15 +994,15 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
 
         {/* Head Pose & Orientation with Live Direction Tag */}
         <div
-          className={`p-2.5 rounded-xl border transition-colors ${
+          className={`p-2.5 rounded-2xl border transition-colors ${
             isDistracted
               ? 'bg-rose-950/80 border-rose-600 text-rose-300 animate-pulse'
               : headDirection !== 'CENTER'
               ? 'bg-amber-950/70 border-amber-600 text-amber-300'
-              : 'bg-slate-850 border-slate-800'
+              : 'bg-slate-950/80 border-slate-800'
           }`}
         >
-          <span className="text-slate-400 text-[10px] block font-medium uppercase">
+          <span className="text-slate-400 text-[10px] block font-mono font-medium uppercase">
             Head Pose & Orientation
           </span>
           <span className="font-mono text-sm font-bold text-white flex items-center justify-between">
@@ -879,7 +1010,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded font-extrabold uppercase ${
                 headDirection === 'CENTER'
-                  ? 'text-emerald-400 bg-emerald-950/60'
+                  ? 'text-cyan-400 bg-cyan-950/60'
                   : isDistracted
                   ? 'text-rose-200 bg-rose-900'
                   : 'text-amber-400 bg-amber-950'
@@ -890,8 +1021,8 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
           </span>
         </div>
 
-        <div className="bg-slate-850 p-2.5 rounded-xl border border-slate-800">
-          <span className="text-slate-400 text-[10px] block font-medium uppercase">
+        <div className="bg-slate-950/80 p-2.5 rounded-2xl border border-slate-800">
+          <span className="text-slate-400 text-[10px] block font-mono font-medium uppercase">
             {t.hud.blinks}
           </span>
           <span className="font-mono text-sm font-bold text-white">
