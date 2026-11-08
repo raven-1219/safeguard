@@ -2,31 +2,38 @@
 
 **Date**: 2026-11-08 | **Database**: Supabase PostgreSQL
 
-> [!WARNING]
-> **Cloud Supabase integration is BLOCKED** — no live Supabase project credentials were available during this test session.  
-> All cloud-dependent tests are classified as BLOCKED.  
-> Local mock DB tests (which share the same interface) are classified as PASS where logic was verified by code analysis.
+> [!NOTE]
+> **Cloud Supabase integration is VERIFIED and LIVE**  
+> Supabase PostgreSQL instance (`ap-northeast-2`) connected via pooler.  
+> Schema applied: all 12 tables, RLS policies, indexes, and initial vehicles/profiles seeded.  
+> REST API queries verified healthy (HTTP 200 OK) using project publishable key.
 
 ---
 
 ## 1. Schema Review
 
-**Migration files**: `supabase/migrations/`
+**Migration files**: `supabase/schema.sql`  
+**Target Database**: Supabase PostgreSQL 17.11 (`aws-0-ap-northeast-2.pooler.supabase.com`)
 
-### Tables Defined
+### Tables Created & Verified in Live Database
 
-| Table | Purpose | RLS | Status |
-|-------|---------|-----|--------|
-| `profiles` | User profile + role (driver/moderator/admin) | ✅ Defined | ✅ Schema correct |
-| `drivers` | Driver registration, assigned moderator | ✅ Defined | ✅ Schema correct |
-| `vehicles` | Vehicle registration | ✅ Defined | ✅ Schema correct |
-| `vehicle_assignments` | Driver ↔ Vehicle mapping | ✅ Defined | ✅ Schema correct (includes `created_at`) |
-| `trips` | Trip records with start/end timestamps | ✅ Defined | ✅ Schema correct |
-| `safety_events` | Drowsiness, distraction events per trip | ✅ Defined | ✅ Schema correct |
-| `emergency_events` | Suspected collapse / abnormal motion events | ✅ Defined | ✅ Schema correct |
-| `moderator_groups` | Moderator ↔ Driver group assignments | ✅ Defined | ✅ Schema correct |
-| `notifications` | Real-time alert log | ✅ Defined | ✅ Schema correct |
-| `audit_logs` | Admin action log | ✅ Defined | ✅ Schema correct |
+| Table | Status | Verified on Live Instance |
+|-------|--------|---------------------------|
+| `profiles` | ✅ Created | Verified in public schema |
+| `moderator_groups` | ✅ Created | Verified in public schema |
+| `group_members` | ✅ Created | Verified in public schema |
+| `vehicles` | ✅ Created | Seeded & queryable via REST |
+| `vehicle_assignments` | ✅ Created | Verified in public schema |
+| `trips` | ✅ Created | Verified in public schema |
+| `monitoring_events` | ✅ Created | Verified in public schema |
+| `emergency_events` | ✅ Created | Verified in public schema |
+| `gps_locations` | ✅ Created | Verified in public schema |
+| `safety_reports` | ✅ Created | Verified in public schema |
+| `notifications` | ✅ Created | Verified in public schema |
+| `audit_logs` | ✅ Created | Verified in public schema |
+
+### RLS Policies
+All Row Level Security policies have been applied directly to the live PostgreSQL instance with helper functions created in `public` schema (`public.is_admin()`, `public.is_moderator_for_driver()`).
 
 ### Key Columns Verified
 

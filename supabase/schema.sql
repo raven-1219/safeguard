@@ -299,19 +299,19 @@ ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 
 -- Helper function: Get user role
-CREATE OR REPLACE FUNCTION auth.get_user_role() 
+CREATE OR REPLACE FUNCTION public.get_user_role() 
 RETURNS user_role AS $$
     SELECT role FROM profiles WHERE id = auth.uid();
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 -- Helper function: Check if user is admin
-CREATE OR REPLACE FUNCTION auth.is_admin() 
+CREATE OR REPLACE FUNCTION public.is_admin() 
 RETURNS BOOLEAN AS $$
     SELECT EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin');
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 -- Helper function: Check if driver belongs to moderator's group
-CREATE OR REPLACE FUNCTION auth.is_moderator_for_driver(driver_uuid UUID) 
+CREATE OR REPLACE FUNCTION public.is_moderator_for_driver(driver_uuid UUID) 
 RETURNS BOOLEAN AS $$
     SELECT EXISTS (
         SELECT 1 
@@ -326,7 +326,7 @@ $$ LANGUAGE sql STABLE SECURITY DEFINER;
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins can manage all profiles"
     ON profiles FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Users can view their own profile"
     ON profiles FOR SELECT
@@ -334,7 +334,7 @@ CREATE POLICY "Users can view their own profile"
 
 CREATE POLICY "Moderators can view assigned drivers"
     ON profiles FOR SELECT
-    USING (auth.is_moderator_for_driver(id));
+    USING (public.is_moderator_for_driver(id));
 
 CREATE POLICY "Users can update their own preferred language"
     ON profiles FOR UPDATE
@@ -346,7 +346,7 @@ CREATE POLICY "Users can update their own preferred language"
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins manage groups"
     ON moderator_groups FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Moderators view own group"
     ON moderator_groups FOR SELECT
@@ -354,7 +354,7 @@ CREATE POLICY "Moderators view own group"
 
 CREATE POLICY "Admins manage group members"
     ON group_members FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Moderators view own group members"
     ON group_members FOR SELECT
@@ -370,7 +370,7 @@ CREATE POLICY "Moderators view own group members"
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins manage vehicles"
     ON vehicles FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Users view active vehicles"
     ON vehicles FOR SELECT
@@ -379,7 +379,7 @@ CREATE POLICY "Users view active vehicles"
 
 CREATE POLICY "Admins manage vehicle assignments"
     ON vehicle_assignments FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Drivers view own assignments"
     ON vehicle_assignments FOR SELECT
@@ -387,14 +387,14 @@ CREATE POLICY "Drivers view own assignments"
 
 CREATE POLICY "Moderators view assigned driver assignments"
     ON vehicle_assignments FOR SELECT
-    USING (auth.is_moderator_for_driver(driver_id));
+    USING (public.is_moderator_for_driver(driver_id));
 
 -- ------------------------------------------------------------------------------
 -- RLS: trips
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins view and manage all trips"
     ON trips FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Drivers manage their own trips"
     ON trips FOR ALL
@@ -402,14 +402,14 @@ CREATE POLICY "Drivers manage their own trips"
 
 CREATE POLICY "Moderators view assigned driver trips"
     ON trips FOR SELECT
-    USING (auth.is_moderator_for_driver(driver_id));
+    USING (public.is_moderator_for_driver(driver_id));
 
 -- ------------------------------------------------------------------------------
 -- RLS: monitoring_events
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins view all monitoring events"
     ON monitoring_events FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Drivers insert and view own events"
     ON monitoring_events FOR ALL
@@ -417,14 +417,14 @@ CREATE POLICY "Drivers insert and view own events"
 
 CREATE POLICY "Moderators view assigned driver monitoring events"
     ON monitoring_events FOR SELECT
-    USING (auth.is_moderator_for_driver(driver_id));
+    USING (public.is_moderator_for_driver(driver_id));
 
 -- ------------------------------------------------------------------------------
 -- RLS: emergency_events
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins full access to emergency events"
     ON emergency_events FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Drivers insert and view own emergencies"
     ON emergency_events FOR ALL
@@ -432,14 +432,14 @@ CREATE POLICY "Drivers insert and view own emergencies"
 
 CREATE POLICY "Moderators view and acknowledge assigned emergencies"
     ON emergency_events FOR ALL
-    USING (auth.is_moderator_for_driver(driver_id));
+    USING (public.is_moderator_for_driver(driver_id));
 
 -- ------------------------------------------------------------------------------
 -- RLS: gps_locations
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins view all GPS locations"
     ON gps_locations FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Drivers insert own GPS"
     ON gps_locations FOR ALL
@@ -447,14 +447,14 @@ CREATE POLICY "Drivers insert own GPS"
 
 CREATE POLICY "Moderators view assigned driver GPS"
     ON gps_locations FOR SELECT
-    USING (auth.is_moderator_for_driver(driver_id));
+    USING (public.is_moderator_for_driver(driver_id));
 
 -- ------------------------------------------------------------------------------
 -- RLS: safety_reports
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins manage all safety reports"
     ON safety_reports FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "Drivers view own safety reports"
     ON safety_reports FOR SELECT
@@ -462,7 +462,7 @@ CREATE POLICY "Drivers view own safety reports"
 
 CREATE POLICY "Moderators view assigned driver safety reports"
     ON safety_reports FOR SELECT
-    USING (auth.is_moderator_for_driver(driver_id));
+    USING (public.is_moderator_for_driver(driver_id));
 
 -- ------------------------------------------------------------------------------
 -- RLS: notifications
@@ -473,14 +473,14 @@ CREATE POLICY "Users view and update own notifications"
 
 CREATE POLICY "Admins manage notifications"
     ON notifications FOR ALL
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 -- ------------------------------------------------------------------------------
 -- RLS: audit_logs
 -- ------------------------------------------------------------------------------
 CREATE POLICY "Admins view audit logs"
     ON audit_logs FOR SELECT
-    USING (auth.is_admin());
+    USING (public.is_admin());
 
 CREATE POLICY "System insert audit logs"
     ON audit_logs FOR INSERT
