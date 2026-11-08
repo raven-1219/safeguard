@@ -12,10 +12,11 @@ import {
   Sliders,
   ChevronDown,
   ChevronUp,
+  Eye,
 } from 'lucide-react';
 import { useLanguage } from '@/lib/i18n/LanguageContext';
 import { calculateEAR, calculateMAR, TemporalFatigueAnalyzer, Point3D } from '@/lib/ai/faceLandmarks';
-import { HeadPoseEstimator } from '@/lib/ai/headPose';
+import { HeadPoseEstimator, HeadPoseResult } from '@/lib/ai/headPose';
 import { cnnDrowsinessClassifier } from '@/lib/ai/cnnClassifier';
 import { PoseEmergencyDetector } from '@/lib/ai/poseDetector';
 import { seatBeltDetector, SeatBeltStatus } from '@/lib/ai/seatBeltDetector';
@@ -52,6 +53,8 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
   const [marValue, setMarValue] = useState<number>(0.22);
   const [headPitch, setHeadPitch] = useState<number>(0);
   const [headYaw, setHeadYaw] = useState<number>(0);
+  const [headDirection, setHeadDirection] = useState<'CENTER' | 'LEFT' | 'RIGHT' | 'DOWN' | 'UP'>('CENTER');
+  const [isDistracted, setIsDistracted] = useState<boolean>(false);
   const [blinkCount, setBlinkCount] = useState<number>(0);
   const [seatBeltStatus, setSeatBeltStatus] = useState<SeatBeltStatus>('FASTENED');
 
@@ -69,10 +72,12 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
   const lastFrameTime = useRef<number>(performance.now());
   const frameCount = useRef<number>(0);
   const lastAlertTimestamp = useRef<number>(0);
+  const lastDistractionAlertTimestamp = useRef<number>(0);
 
   // MediaPipe solution instance ref
   const faceMeshRef = useRef<any>(null);
   const detectedLandmarksRef = useRef<Point3D[] | null>(null);
+  const isMediaPipeBusyRef = useRef<boolean>(false);
   const [trackingMode, setTrackingMode] = useState<'mediapipe' | 'optical'>('optical');
 
   // Initialize camera and AI pipeline
@@ -104,7 +109,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
             setIsCameraActive(true);
             setAiEngineStatus('Loading neural fatigue classifier...');
 
-            // Initialize 1D temporal CNN model
+            // Initialize fatigue classifier
             await cnnDrowsinessClassifier.initialize();
 
             // Attempt loading MediaPipe FaceMesh
@@ -155,7 +160,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       const { FaceMesh } = await import('@mediapipe/face_mesh');
 
       const faceMesh = new FaceMesh({
-        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}`,
       });
 
       faceMesh.setOptions({
@@ -168,6 +173,9 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       faceMesh.onResults((results: any) => {
         if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
           detectedLandmarksRef.current = results.multiFaceLandmarks[0];
+          setTrackingMode('mediapipe');
+        } else {
+          detectedLandmarksRef.current = null;
         }
       });
 
@@ -179,98 +187,122 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       console.warn('MediaPipe network initialization fallback to optical tracker:', err);
       setIsLoadingModels(false);
       setAiEngineStatus('Active (Optical Landmark & Luminosity Tracker)');
+      setTrackingMode('optical');
     }
   };
 
-  // Optical face & eye feature extractor (acts when offline or as high-speed pipeline)
+  // Optical face & eye feature extractor (tracks face centroid & eye state)
   const computeOpticalLandmarks = (ctx: CanvasRenderingContext2D, w: number, h: number, timeSec: number): Point3D[] => {
     // If real MediaPipe detected landmarks, return them directly
     if (detectedLandmarksRef.current && detectedLandmarksRef.current.length >= 468) {
       return detectedLandmarksRef.current;
     }
 
-    // Optical canvas tracking based on central facial bounding area
-    const boxX = w * 0.30;
-    const boxY = h * 0.20;
-    const boxW = w * 0.40;
-    const boxH = h * 0.55;
-
-    // Sample optical eye luminosity to verify actual physical blinks from webcam
+    // Optical canvas tracking: compute face centroid by sampling skin tone pixels
+    let sumX = 0;
+    let sumY = 0;
+    let skinPixelCount = 0;
     let eyeLuminance = 120;
+
     try {
-      const eyePatch = ctx.getImageData(
-        Math.floor(boxX + boxW * 0.2),
-        Math.floor(boxY + boxH * 0.3),
-        Math.floor(boxW * 0.6),
-        Math.floor(boxH * 0.2)
-      );
-      let sum = 0;
-      for (let i = 0; i < eyePatch.data.length; i += 16) {
-        sum += eyePatch.data[i];
+      const step = 8;
+      const sampleW = Math.floor(w * 0.7);
+      const sampleH = Math.floor(h * 0.65);
+      const startX = Math.floor(w * 0.15);
+      const startY = Math.floor(h * 0.1);
+      const imgData = ctx.getImageData(startX, startY, sampleW, sampleH);
+      const d = imgData.data;
+
+      for (let y = 0; y < sampleH; y += step) {
+        for (let x = 0; x < sampleW; x += step) {
+          const idx = (y * sampleW + x) * 4;
+          const r = d[idx];
+          const g = d[idx + 1];
+          const b = d[idx + 2];
+          // Skin color heuristic
+          if (r > 60 && g > 35 && b > 20 && r > g && r > b && (r - g) > 12) {
+            sumX += startX + x;
+            sumY += startY + y;
+            skinPixelCount++;
+          }
+        }
       }
-      eyeLuminance = sum / (eyePatch.data.length / 16);
+
+      // Eye luminance sample in central eye band
+      const eyePatch = ctx.getImageData(
+        Math.floor(w * 0.35),
+        Math.floor(h * 0.30),
+        Math.floor(w * 0.30),
+        Math.floor(h * 0.15)
+      );
+      let eyeSum = 0;
+      for (let i = 0; i < eyePatch.data.length; i += 16) {
+        eyeSum += eyePatch.data[i];
+      }
+      eyeLuminance = eyeSum / (eyePatch.data.length / 16);
     } catch (e) {
       // Ignored
     }
 
+    // Compute dynamic face center [0, 1]
+    let faceCenterX = 0.5;
+    let faceCenterY = 0.45;
+    if (skinPixelCount > 40) {
+      faceCenterX = sumX / skinPixelCount / w;
+      faceCenterY = sumY / skinPixelCount / h;
+    }
+
+    // Relative movement offset
+    const offsetX = Math.max(-0.25, Math.min(0.25, faceCenterX - 0.5));
+    const offsetY = Math.max(-0.25, Math.min(0.25, faceCenterY - 0.45));
+
     // Anchor geometry points
     const landmarks: Point3D[] = new Array(468);
     for (let i = 0; i < 468; i++) {
-      landmarks[i] = { x: 0.5, y: 0.5, z: 0 };
+      landmarks[i] = { x: faceCenterX, y: faceCenterY, z: 0 };
     }
 
-    // --- Luminosity-driven EAR modulation ---
-    // When eyes are open, the eye region is brighter (iris/sclera reflects light).
-    // When eyes are closed, the region darkens (eyelid shadow reduces luminance).
-    // We modulate the vertical separation of eyelid landmarks accordingly.
-    // bright (>= 110): open  → earFactor = 1.0 → EAR ~ 0.030 (open)
-    // dim   (70–109):  blink → earFactor = 0.55 → EAR ~ 0.017 (closing)
-    // dark  (< 70):    closed→ earFactor = 0.18 → EAR ~ 0.005 (shut)
-    // These yield nominal EAR values of ~0.300, ~0.165, ~0.050 respectively
-    // after the calculateEAR euclidean formula, correctly crossing the 0.21 threshold.
-    const eyeOpenSeparation  = 0.030; // base vertical separation (open eye)
-    const earFactor =
-      eyeLuminance >= 110 ? 1.00 :
-      eyeLuminance >= 70  ? 0.55 :
-                            0.18;
+    // Luminosity-driven EAR modulation
+    const eyeOpenSeparation = 0.030;
+    const earFactor = eyeLuminance >= 110 ? 1.00 : eyeLuminance >= 70 ? 0.55 : 0.18;
     const eyeVSep = eyeOpenSeparation * earFactor;
 
-    // Key points:
-    // Nose tip: 1, Chin: 152, Forehead: 10, Left Cheek: 234, Right Cheek: 454
-    landmarks[1] = { x: 0.5, y: 0.48, z: 0 };
-    landmarks[152] = { x: 0.5, y: 0.75, z: 0 };
-    landmarks[10] = { x: 0.5, y: 0.22, z: 0 };
-    landmarks[234] = { x: 0.32, y: 0.48, z: 0 };
-    landmarks[454] = { x: 0.68, y: 0.48, z: 0 };
+    // Dynamically located facial anchors:
+    landmarks[1] = { x: faceCenterX + offsetX * 0.6, y: faceCenterY + 0.03 + offsetY * 0.5, z: 0 }; // Nose tip
+    landmarks[10] = { x: faceCenterX, y: Math.max(0.06, faceCenterY - 0.22), z: 0 }; // Forehead
+    landmarks[152] = { x: faceCenterX, y: Math.min(0.94, faceCenterY + 0.25), z: 0 }; // Chin
+    landmarks[234] = { x: Math.max(0.08, faceCenterX - 0.18), y: faceCenterY, z: 0 }; // Left cheek
+    landmarks[454] = { x: Math.min(0.92, faceCenterX + 0.18), y: faceCenterY, z: 0 }; // Right cheek
 
-    // Left eye outer: 33, inner: 133, top1: 160, bottom1: 144, top2: 158, bottom2: 153
-    // Eyelid landmarks use luminosity-modulated vertical separation.
-    const leftEyeCenterY = 0.38;
-    landmarks[33]  = { x: 0.38, y: leftEyeCenterY, z: 0 };
-    landmarks[133] = { x: 0.44, y: leftEyeCenterY, z: 0 };
-    landmarks[160] = { x: 0.41, y: leftEyeCenterY - eyeVSep, z: 0 }; // top lid
-    landmarks[144] = { x: 0.41, y: leftEyeCenterY + eyeVSep, z: 0 }; // bottom lid
-    landmarks[158] = { x: 0.42, y: leftEyeCenterY - eyeVSep, z: 0 }; // top lid 2
-    landmarks[153] = { x: 0.42, y: leftEyeCenterY + eyeVSep, z: 0 }; // bottom lid 2
+    // Left eye outer: 33, inner: 133
+    const leftEyeX = faceCenterX - 0.10;
+    const leftEyeY = faceCenterY - 0.07;
+    landmarks[33] = { x: leftEyeX - 0.04, y: leftEyeY, z: 0 };
+    landmarks[133] = { x: leftEyeX + 0.04, y: leftEyeY, z: 0 };
+    landmarks[160] = { x: leftEyeX, y: leftEyeY - eyeVSep, z: 0 };
+    landmarks[144] = { x: leftEyeX, y: leftEyeY + eyeVSep, z: 0 };
+    landmarks[158] = { x: leftEyeX + 0.01, y: leftEyeY - eyeVSep, z: 0 };
+    landmarks[153] = { x: leftEyeX + 0.01, y: leftEyeY + eyeVSep, z: 0 };
 
-    // Right eye outer: 362, inner: 263, top1: 385, bottom1: 380, top2: 387, bottom2: 373
-    const rightEyeCenterY = 0.38;
-    landmarks[362] = { x: 0.62, y: rightEyeCenterY, z: 0 };
-    landmarks[263] = { x: 0.56, y: rightEyeCenterY, z: 0 };
-    landmarks[385] = { x: 0.59, y: rightEyeCenterY - eyeVSep, z: 0 }; // top lid
-    landmarks[380] = { x: 0.59, y: rightEyeCenterY + eyeVSep, z: 0 }; // bottom lid
-    landmarks[387] = { x: 0.58, y: rightEyeCenterY - eyeVSep, z: 0 }; // top lid 2
-    landmarks[373] = { x: 0.58, y: rightEyeCenterY + eyeVSep, z: 0 }; // bottom lid 2
+    // Right eye outer: 362, inner: 263
+    const rightEyeX = faceCenterX + 0.10;
+    const rightEyeY = faceCenterY - 0.07;
+    landmarks[362] = { x: rightEyeX + 0.04, y: rightEyeY, z: 0 };
+    landmarks[263] = { x: rightEyeX - 0.04, y: rightEyeY, z: 0 };
+    landmarks[385] = { x: rightEyeX, y: rightEyeY - eyeVSep, z: 0 };
+    landmarks[380] = { x: rightEyeX, y: rightEyeY + eyeVSep, z: 0 };
+    landmarks[387] = { x: rightEyeX - 0.01, y: rightEyeY - eyeVSep, z: 0 };
+    landmarks[373] = { x: rightEyeX - 0.01, y: rightEyeY + eyeVSep, z: 0 };
 
     // Mouth corners: 78, 308; lips: 13, 14
-    landmarks[78]  = { x: 0.44, y: 0.62, z: 0 };
-    landmarks[308] = { x: 0.56, y: 0.62, z: 0 };
-    landmarks[13]  = { x: 0.50, y: 0.60, z: 0 };
-    landmarks[14]  = { x: 0.50, y: 0.64, z: 0 };
+    landmarks[78] = { x: faceCenterX - 0.06, y: faceCenterY + 0.15, z: 0 };
+    landmarks[308] = { x: faceCenterX + 0.06, y: faceCenterY + 0.15, z: 0 };
+    landmarks[13] = { x: faceCenterX, y: faceCenterY + 0.14, z: 0 };
+    landmarks[14] = { x: faceCenterX, y: faceCenterY + 0.16, z: 0 };
 
-    // Upper shoulders (pose landmarks)
-    landmarks[11] = { x: 0.28, y: 0.85, z: 0 }; // Left shoulder
-    landmarks[12] = { x: 0.72, y: 0.85, z: 0 }; // Right shoulder
+    // Upper shoulders
+    landmarks[11] = { x: 0.28, y: 0.85, z: 0 };
+    landmarks[12] = { x: 0.72, y: 0.85, z: 0 };
 
     return landmarks;
   };
@@ -312,13 +344,15 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       }
     }
 
-    // Send frame to MediaPipe if initialized
-    if (faceMeshRef.current && isCameraActive) {
-      try {
-        faceMeshRef.current.send({ image: video });
-      } catch (err) {
-        // Ignored
-      }
+    // Send frame to MediaPipe with concurrency lock to prevent frame queue choking
+    if (faceMeshRef.current && isCameraActive && !isMediaPipeBusyRef.current) {
+      isMediaPipeBusyRef.current = true;
+      faceMeshRef.current
+        .send({ image: video })
+        .catch(() => {})
+        .finally(() => {
+          isMediaPipeBusyRef.current = false;
+        });
     }
 
     // FPS Counter
@@ -347,7 +381,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     // 4. Suspected Emergency & Posture evaluation
     const poseTelemetry = emergencyDetector.processPose(landmarks);
 
-    // 5. 1D Temporal Neural Classifier evaluation
+    // 5. Physiological Fatigue Classifier evaluation
     const featureVector = [
       fatigue.leftEar,
       fatigue.rightEar,
@@ -386,17 +420,26 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     setMarValue(Math.round(fatigue.mar * 1000) / 1000);
     setHeadPitch(headPose.pitch);
     setHeadYaw(headPose.yaw);
+    setHeadDirection(headPose.direction);
+    setIsDistracted(headPose.isDistracted);
     setBlinkCount(fatigue.blinkCount);
     setSeatBeltStatus(belt.status);
     setSafetyScore(safetyResult.score);
     setSafetyState(safetyResult.state);
 
-    // Web Audio alert management (Local laptop speakers)
+    // Responsive Web Audio alert management (Local laptop speakers)
     if (safetyResult.state === 'HIGHLY DROWSY' || poseTelemetry.isSuspectedCollapse) {
       audioManager.startSiren(poseTelemetry.isSuspectedCollapse ? 'emergency' : 'high_drowsiness');
-    } else if (safetyResult.state === 'DROWSY' || headPose.isDistracted || belt.status === 'UNFASTENED') {
+    } else if (headPose.isDistracted) {
       audioManager.stopAlarm();
-      if (now - lastAlertTimestamp.current > 4000) {
+      // Dedicated distraction warning sound: triggers immediately and pulses every 1.2s while head turned
+      if (now - lastDistractionAlertTimestamp.current > 1200) {
+        audioManager.playBeep(980, 220); // Sharp alert tone
+        lastDistractionAlertTimestamp.current = now;
+      }
+    } else if (safetyResult.state === 'DROWSY' || belt.status === 'UNFASTENED') {
+      audioManager.stopAlarm();
+      if (now - lastAlertTimestamp.current > 3000) {
         audioManager.playBeep(880, 250);
         lastAlertTimestamp.current = now;
       }
@@ -404,8 +447,8 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
       audioManager.stopAlarm();
     }
 
-    // Paint HUD visual graphics on canvas
-    drawVisualHUD(ctx, w, h, fatigue.avgEar, fatigue.mar, headPose, safetyResult, belt);
+    // Paint HUD visual graphics on canvas with live face following
+    drawVisualHUD(ctx, w, h, fatigue.avgEar, fatigue.mar, headPose, safetyResult, belt, landmarks);
 
     // Emit live telemetry to parent
     if (onTelemetryUpdate) {
@@ -461,54 +504,117 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
     onTelemetryUpdate,
   ]);
 
-  // HUD Painting routine
+  // Dynamic HUD Painting routine (follows actual head landmarks)
   const drawVisualHUD = (
     ctx: CanvasRenderingContext2D,
     w: number,
     h: number,
     ear: number,
     mar: number,
-    headPose: any,
+    headPose: HeadPoseResult,
     safetyResult: any,
-    belt: any
+    belt: any,
+    landmarks: Point3D[]
   ) => {
-    const boxColor =
-      safetyResult.state === 'HIGHLY DROWSY'
-        ? '#ef4444'
-        : safetyResult.state === 'DROWSY'
-        ? '#f59e0b'
-        : '#10b981';
+    const isCritical = safetyResult.state === 'HIGHLY DROWSY';
+    const isDistractedWarn = headPose.isDistracted;
+    const isDrowsy = safetyResult.state === 'DROWSY';
 
-    // Face boundary
-    const bx = w * 0.28;
-    const by = h * 0.16;
-    const bw = w * 0.44;
-    const bh = h * 0.62;
+    const boxColor = isCritical
+      ? '#ef4444'
+      : isDistractedWarn
+      ? '#f97316'
+      : isDrowsy
+      ? '#f59e0b'
+      : '#10b981';
 
+    // 1. Dynamic Face Boundary calculated from actual landmarks
+    let minX = 1, maxX = 0, minY = 1, maxY = 0;
+    const keyIndices = [10, 152, 234, 454, 1, 33, 263];
+    for (const idx of keyIndices) {
+      const p = landmarks[idx];
+      if (p) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+    }
+
+    const padX = (maxX - minX) * 0.20;
+    const padY = (maxY - minY) * 0.20;
+    const bx = Math.max(0, (minX - padX) * w);
+    const by = Math.max(0, (minY - padY) * h);
+    const bw = Math.min(w - bx, (maxX - minX + padX * 2) * w);
+    const bh = Math.min(h - by, (maxY - minY + padY * 2) * h);
+
+    // Draw dynamic face rectangle
     ctx.strokeStyle = boxColor;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = isDistractedWarn ? 4 : 3;
+    if (isDistractedWarn) {
+      ctx.setLineDash([8, 6]);
+    } else {
+      ctx.setLineDash([]);
+    }
     ctx.strokeRect(bx, by, bw, bh);
+    ctx.setLineDash([]);
 
-    // Eye contour target rings
-    const leftEyeX = bx + bw * 0.28;
-    const rightEyeX = bx + bw * 0.72;
-    const eyeY = by + bh * 0.35;
+    // 2. Eye contour target rings at actual landmark coordinates
+    const leftEye = landmarks[33] || { x: 0.41, y: 0.38 };
+    const rightEye = landmarks[362] || { x: 0.59, y: 0.38 };
 
     ctx.fillStyle = ear < earSensitivity ? '#ef4444' : '#0284c7';
     ctx.beginPath();
-    ctx.arc(leftEyeX, eyeY, 8, 0, 2 * Math.PI);
-    ctx.arc(rightEyeX, eyeY, 8, 0, 2 * Math.PI);
+    ctx.arc(leftEye.x * w, leftEye.y * h, 7, 0, 2 * Math.PI);
+    ctx.arc(rightEye.x * w, rightEye.y * h, 7, 0, 2 * Math.PI);
     ctx.fill();
 
-    // Mouth marker
-    const mx = bx + bw * 0.5;
-    const my = by + bh * 0.75;
+    // 3. Mouth marker at actual mouth coordinates
+    const mouth = landmarks[13] || { x: 0.50, y: 0.62 };
     ctx.fillStyle = mar > marSensitivity ? '#ef4444' : '#0284c7';
     ctx.beginPath();
-    ctx.ellipse(mx, my, 16, mar > marSensitivity ? 14 : 6, 0, 0, 2 * Math.PI);
+    ctx.ellipse(mouth.x * w, mouth.y * h, 14, mar > marSensitivity ? 14 : 6, 0, 0, 2 * Math.PI);
     ctx.fill();
 
-    // Diagonal seat belt line (if visible)
+    // 4. Directional Head Orientation Vector from nose
+    const nose = landmarks[1] || { x: 0.5, y: 0.5 };
+    const noseScreenX = nose.x * w;
+    const noseScreenY = nose.y * h;
+
+    const vectorLength = 45;
+    const targetX = noseScreenX + (headPose.yaw / 45) * vectorLength;
+    const targetY = noseScreenY - (headPose.pitch / 45) * vectorLength;
+
+    ctx.strokeStyle = isDistractedWarn ? '#f97316' : '#38bdf8';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(noseScreenX, noseScreenY);
+    ctx.lineTo(targetX, targetY);
+    ctx.stroke();
+
+    ctx.fillStyle = isDistractedWarn ? '#f97316' : '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(targetX, targetY, 4, 0, 2 * Math.PI);
+    ctx.fill();
+
+    // 5. High-Visibility Distraction Alert Banner on Canvas
+    if (isDistractedWarn) {
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.92)';
+      ctx.fillRect(0, 0, w, 44);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 15px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`⚠️ DISTRACTION ALERT: PLEASE LOOK AHEAD (${headPose.direction})`, w / 2, 28);
+    } else if (headPose.direction !== 'CENTER') {
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
+      ctx.fillRect(0, 0, w, 32);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`HEAD TURNED: ${headPose.direction} (Yaw: ${headPose.yaw}° Pitch: ${headPose.pitch}°)`, w / 2, 21);
+    }
+
+    // 6. Diagonal seat belt line (if visible)
     if (belt.status !== 'UNKNOWN') {
       ctx.strokeStyle = belt.isFastened ? 'rgba(16, 185, 129, 0.7)' : 'rgba(239, 68, 68, 0.8)';
       ctx.lineWidth = 5;
@@ -588,19 +694,31 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
 
         {/* Top Floating HUD Indicators */}
         <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-10">
-          <div
-            className={`px-3 py-1.5 rounded-xl backdrop-blur-md flex items-center space-x-2 border shadow-lg ${
-              safetyState === 'HIGHLY DROWSY'
-                ? 'bg-rose-950/80 text-rose-300 border-rose-500 animate-pulse'
-                : safetyState === 'DROWSY'
-                ? 'bg-amber-950/80 text-amber-300 border-amber-500'
-                : 'bg-emerald-950/80 text-emerald-300 border-emerald-500'
-            }`}
-          >
-            <span className="w-2.5 h-2.5 rounded-full bg-current animate-ping" />
-            <span className="font-extrabold text-xs tracking-wider uppercase">
-              {safetyState}
-            </span>
+          <div className="flex items-center space-x-2">
+            <div
+              className={`px-3 py-1.5 rounded-xl backdrop-blur-md flex items-center space-x-2 border shadow-lg ${
+                safetyState === 'HIGHLY DROWSY'
+                  ? 'bg-rose-950/80 text-rose-300 border-rose-500 animate-pulse'
+                  : safetyState === 'DROWSY'
+                  ? 'bg-amber-950/80 text-amber-300 border-amber-500'
+                  : 'bg-emerald-950/80 text-emerald-300 border-emerald-500'
+              }`}
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-current animate-ping" />
+              <span className="font-extrabold text-xs tracking-wider uppercase">
+                {safetyState}
+              </span>
+            </div>
+
+            {/* Distraction Pill */}
+            {isDistracted && (
+              <div className="px-2.5 py-1.5 rounded-xl bg-rose-950/90 text-rose-300 border border-rose-500 animate-bounce flex items-center space-x-1 shadow-lg">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span className="text-[11px] font-black uppercase tracking-wider">
+                  DISTRACTED ({headDirection})
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">
@@ -610,20 +728,15 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
             <div className="px-3 py-1 rounded-lg bg-sky-950/80 backdrop-blur border border-sky-600 text-xs font-bold text-sky-300">
               Score: {safetyScore}%
             </div>
-            {/* Tracking mode badge — tells user which detection path is active */}
+            {/* Tracking mode badge */}
             <div
               className={`px-2.5 py-1 rounded-lg backdrop-blur border text-[10px] font-semibold tracking-wide ${
                 trackingMode === 'mediapipe'
                   ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700'
                   : 'bg-amber-950/80 text-amber-300 border-amber-700'
               }`}
-              title={
-                trackingMode === 'mediapipe'
-                  ? 'MediaPipe FaceMesh CDN model active — full 468-landmark face detection'
-                  : 'Optical luminosity tracker — eye-region brightness modulates EAR (MediaPipe CDN unavailable)'
-              }
             >
-              {trackingMode === 'mediapipe' ? '🟢 MediaPipe' : '🟡 Optical Fallback'}
+              {trackingMode === 'mediapipe' ? '🟢 MediaPipe' : '🟡 Optical Tracker'}
             </div>
           </div>
         </div>
@@ -641,7 +754,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
                 ? 'bg-rose-950/80 text-rose-300 border-rose-600 animate-bounce'
                 : 'bg-slate-900/80 text-slate-300 border-slate-700'
             }`}
-            title="Click to manually declare/toggle seat belt status if webcam angle is tight"
+            title="Click to manually declare/toggle seat belt status"
           >
             <Shield className="w-3.5 h-3.5" />
             <span>
@@ -748,12 +861,32 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ onTelemetryUpdate, drive
           </span>
         </div>
 
-        <div className="bg-slate-850 p-2.5 rounded-xl border border-slate-800">
+        {/* Head Pose & Orientation with Live Direction Tag */}
+        <div
+          className={`p-2.5 rounded-xl border transition-colors ${
+            isDistracted
+              ? 'bg-rose-950/80 border-rose-600 text-rose-300 animate-pulse'
+              : headDirection !== 'CENTER'
+              ? 'bg-amber-950/70 border-amber-600 text-amber-300'
+              : 'bg-slate-850 border-slate-800'
+          }`}
+        >
           <span className="text-slate-400 text-[10px] block font-medium uppercase">
-            {t.hud.headPose}
+            Head Pose & Orientation
           </span>
-          <span className="font-mono text-sm font-bold text-white">
-            P:{headPitch}° Y:{headYaw}°
+          <span className="font-mono text-sm font-bold text-white flex items-center justify-between">
+            <span>P:{headPitch}° Y:{headYaw}°</span>
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded font-extrabold uppercase ${
+                headDirection === 'CENTER'
+                  ? 'text-emerald-400 bg-emerald-950/60'
+                  : isDistracted
+                  ? 'text-rose-200 bg-rose-900'
+                  : 'text-amber-400 bg-amber-950'
+              }`}
+            >
+              {headDirection}
+            </span>
           </span>
         </div>
 

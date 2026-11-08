@@ -58,36 +58,6 @@ export const Navbar: React.FC = () => {
 
   return (
     <header className="sticky top-0 z-50 bg-slate-900/95 backdrop-blur border-b border-slate-800 text-white">
-      {/* Top Transparent Connection Bar */}
-      <div className="bg-slate-950 border-b border-slate-850 px-4 py-1 text-[11px] flex items-center justify-between text-slate-400">
-        <div className="flex items-center space-x-3">
-          <span className="flex items-center space-x-1.5">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                isSupabaseConfigured ? 'bg-emerald-400' : 'bg-amber-400'
-              }`}
-            />
-            <span className="font-semibold text-slate-300">
-              {isSupabaseConfigured
-                ? 'Supabase Cloud Connected (PostgreSQL RLS Active)'
-                : 'Local Offline Storage Mode (Demonstration Persistence)'}
-            </span>
-          </span>
-
-          {queueCount > 0 && (
-            <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
-              {queueCount} Pending Sync
-            </span>
-          )}
-        </div>
-
-        <div className="hidden sm:flex items-center space-x-4">
-          <span className="text-[10px] text-slate-400">
-            Scope: Laptop Webcam & Audio (Hardware Excluded)
-          </span>
-        </div>
-      </div>
-
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Brand */}

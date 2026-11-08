@@ -63,8 +63,8 @@ export class SafetyScoreAggregator {
 
     // Distraction penalty
     if (input.isDistracted) {
-      score -= 18;
-      reasons.push('Driver Distraction (Looking Away)');
+      score -= 30;
+      reasons.push('Driver Distraction (Looking Away / Head Turned)');
     }
 
     // Seat belt penalty
@@ -101,7 +101,7 @@ export class SafetyScoreAggregator {
     let state: DriverSafetyState = 'ALERT';
     if (score < 50 || input.eyeClosedFrames > 35) {
       state = 'HIGHLY DROWSY';
-    } else if (score < 75 || input.eyeClosedFrames > 15 || input.isYawning) {
+    } else if (score < 75 || input.eyeClosedFrames > 15 || input.isYawning || input.isDistracted) {
       state = 'DROWSY';
     }
 

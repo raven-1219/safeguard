@@ -1,6 +1,7 @@
 // ==============================================================================
 // SAFE GUARD AI - Head Pose Estimation & Distraction Detection Engine
 // Computes 3D Pitch, Yaw, and Roll from Face Mesh landmarks
+// Highly responsive head movement and orientation tracking
 // ==============================================================================
 
 import { Point3D } from './faceLandmarks';
@@ -16,10 +17,11 @@ export interface HeadPoseResult {
 
 export class HeadPoseEstimator {
   private distractedFrames = 0;
-  private readonly YAW_THRESHOLD = 28;      // Degrees away from center
-  private readonly PITCH_DOWN_THRESHOLD = -22; // Looking down at phone/lap
-  private readonly PITCH_UP_THRESHOLD = 25;    // Looking up at ceiling
-  private readonly DISTRACTION_TRIGGER_FRAMES = 50; // ~1.6s of continuous inattention
+  // Calibrated sensitive thresholds for realistic laptop webcam field of view
+  public yawThreshold = 14;           // Degrees turn left or right
+  public pitchDownThreshold = -10;    // Degrees tilt down (phone/lap check)
+  public pitchUpThreshold = 14;       // Degrees tilt up (ceiling check)
+  public distractionFramesTrigger = 8; // ~0.25s of looking away triggers alert
 
   public estimatePose(landmarks: Point3D[]): HeadPoseResult {
     if (!landmarks || landmarks.length < 468) {
@@ -39,42 +41,44 @@ export class HeadPoseEstimator {
     const leftCheek = landmarks[234];
     const rightCheek = landmarks[454];
 
-    // Yaw estimation: asymmetry between nose tip and cheek boundaries
-    const distToLeftCheek = Math.abs(noseTip.x - leftCheek.x);
-    const distToRightCheek = Math.abs(noseTip.x - rightCheek.x);
+    // Horizontal yaw estimation:
+    // Calculates the offset of the nose relative to the cheek midpoint
     const cheekSpan = Math.abs(rightCheek.x - leftCheek.x);
-
     let yaw = 0;
-    if (cheekSpan > 0.01) {
-      const ratio = (distToRightCheek - distToLeftCheek) / cheekSpan;
-      yaw = ratio * 75; // Approx degrees
+    if (cheekSpan > 0.02) {
+      const cheekMidpointX = (leftCheek.x + rightCheek.x) / 2;
+      const horizontalOffset = noseTip.x - cheekMidpointX;
+      // Ratio from -1.0 to +1.0
+      const yawRatio = horizontalOffset / (cheekSpan * 0.5);
+      yaw = yawRatio * 52; // Scale to degrees (-52° to +52°)
     }
 
-    // Pitch estimation: nose vertical ratio between forehead and chin
+    // Vertical pitch estimation:
+    // Compares nose vertical position relative to forehead and chin
     const faceHeight = Math.abs(chin.y - forehead.y);
     let pitch = 0;
-    if (faceHeight > 0.01) {
+    if (faceHeight > 0.02) {
+      // Nominal centered nose vertical ratio is ~0.58
       const noseRel = (noseTip.y - forehead.y) / faceHeight;
-      // Normal nominal noseRel is approx 0.60
-      pitch = (0.60 - noseRel) * 120; // Inverted so looking down is negative
+      pitch = (0.58 - noseRel) * 110; // Positive = up, Negative = down
     }
 
-    // Roll estimation: eye line angle
-    const leftEyeOuter = landmarks[33];
-    const rightEyeOuter = landmarks[362];
-    const dX = rightEyeOuter.x - leftEyeOuter.x;
-    const dY = rightEyeOuter.y - leftEyeOuter.y;
+    // Roll estimation: Eye tilt angle
+    const leftEye = landmarks[33];
+    const rightEye = landmarks[362];
+    const dX = rightEye.x - leftEye.x;
+    const dY = rightEye.y - leftEye.y;
     const roll = Math.atan2(dY, dX) * (180 / Math.PI);
 
     // Direction classification
     let direction: 'CENTER' | 'LEFT' | 'RIGHT' | 'DOWN' | 'UP' = 'CENTER';
-    if (yaw < -this.YAW_THRESHOLD) {
+    if (yaw < -this.yawThreshold) {
       direction = 'LEFT';
-    } else if (yaw > this.YAW_THRESHOLD) {
+    } else if (yaw > this.yawThreshold) {
       direction = 'RIGHT';
-    } else if (pitch < this.PITCH_DOWN_THRESHOLD) {
+    } else if (pitch < this.pitchDownThreshold) {
       direction = 'DOWN';
-    } else if (pitch > this.PITCH_UP_THRESHOLD) {
+    } else if (pitch > this.pitchUpThreshold) {
       direction = 'UP';
     }
 
@@ -83,10 +87,11 @@ export class HeadPoseEstimator {
     if (isLookingAway) {
       this.distractedFrames++;
     } else {
-      this.distractedFrames = Math.max(0, this.distractedFrames - 3);
+      // Faster recovery when looking straight ahead
+      this.distractedFrames = Math.max(0, this.distractedFrames - 2);
     }
 
-    const isDistracted = this.distractedFrames >= this.DISTRACTION_TRIGGER_FRAMES;
+    const isDistracted = this.distractedFrames >= this.distractionFramesTrigger;
 
     return {
       pitch: Math.round(pitch * 10) / 10,
@@ -103,3 +108,4 @@ export class HeadPoseEstimator {
   }
 }
 
+export const headPoseEstimator = new HeadPoseEstimator();
