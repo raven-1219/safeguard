@@ -159,3 +159,4 @@
 | Map shows no tiles | Check internet connection; Leaflet requires OpenStreetMap tile CDN |
 | Login fails with Supabase error | App will fall back to local mock mode; use role switcher in Navbar |
 | TypeScript build errors | Run `npm run build` and check output; verify no `.env.local` values missing |
+

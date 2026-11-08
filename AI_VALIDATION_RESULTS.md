@@ -160,3 +160,4 @@ $$\text{MAR} = \frac{\|p_{13} - p_{14}\|}{\|p_{78} - p_{308}\|}$$
 | Emergency detector | Kinetic threshold rules | ✅ Rules verified | None |
 | Image enhancement | LUT gamma transform | ✅ Mathematically verified | None |
 | MediaPipe FaceMesh | Google CDN WASM model | ⚠️ CDN load not confirmed in automated session | Google's published metrics; not claimed by SAFE GUARD |
+

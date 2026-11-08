@@ -126,3 +126,4 @@ The `mockDb` module implements the same interface as the Supabase client. All ap
 **Cloud Supabase Status: BLOCKED / NOT VERIFIED**  
 **Mock DB Status: PASS**  
 **Schema & RLS definitions: PASS (syntactically correct SQL)**
+

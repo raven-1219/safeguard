@@ -214,3 +214,4 @@
 | OBD-II / CAN bus data | Hardware violation — not applicable to laptop demo |
 | ESP32 / Arduino references | Hardware violation |
 | Google Fonts CDN import at build time | Caused `ENOTFOUND` build failure — replaced with CSS system fonts |
+

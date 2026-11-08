@@ -261,3 +261,4 @@
 2. **Tracking mode HUD badge added** — Users can see whether "🟢 MediaPipe" or "🟡 Optical Fallback" is active at all times.
 
 3. **AI_MODEL_DOCUMENTATION.md corrected** — Section 2 no longer claims "1D Temporal CNN" architecture. Accurately documents the deterministic `Physiological_Kinetic_Model`.
+

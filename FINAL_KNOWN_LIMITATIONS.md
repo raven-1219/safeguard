@@ -187,3 +187,4 @@ All emergency events are labelled "suspected" in the UI and documentation. Emerg
 | 8 | Head pose geometric approximation | Low | Very low | Frame as "orientation indicators" |
 | 9 | No multi-camera selection | Very low | None | N/A for single-webcam laptops |
 | 10 | Emergency not medically validated | Important | None (correctly stated) | Label as "suspected indicators" |
+

@@ -119,3 +119,4 @@ The following tests **must be performed manually** before academic demonstration
 | MediaPipe CDN WASM blocked by some corporate firewalls | Chrome/Edge (restricted networks) | Optical luminosity fallback activates automatically |
 | Safari WebRTC `getUserMedia` may default lower resolution | Safari | Ideal constraints set; actual resolution may vary |
 | `backdrop-filter` not supported in very old Firefox | Firefox <70 | HUD badge still visible; blur effect omitted gracefully |
+
